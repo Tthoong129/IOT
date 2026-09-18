@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "author": "User",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp1", "top": 60, "left": 10, "attrs": {} },
+    {
+      "type": "board-mfrc522",
+      "id": "rfid1",
+      "top": 66.95,
+      "left": 335,
+      "attrs": { "uid": "01:02:03:04" }
+    },
+    { "type": "wokwi-servo", "id": "servo1", "top": 250, "left": 293.16, "attrs": {} },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 340.8,
+      "left": 26.16,
+      "attrs": { "volume": "0.1" }
+    },
+    {
+      "type": "wokwi-lcd1602",
+      "id": "lcd1",
+      "top": -120,
+      "left": 100,
+      "attrs": { "pins": "i2c" }
+    }
+  ],
+  "connections": [
+    [ "esp1:5", "rfid1:SDA", "green", [ "h0" ] ],
+    [ "esp1:18", "rfid1:SCK", "green", [ "h0" ] ],
+    [ "esp1:23", "rfid1:MOSI", "green", [ "h0" ] ],
+    [ "esp1:19", "rfid1:MISO", "green", [ "h0" ] ],
+    [ "esp1:4", "rfid1:RST", "green", [ "h0" ] ],
+    [ "esp1:3V3", "rfid1:3.3V", "green", [ "h0" ] ],
+    [ "esp1:GND.3", "rfid1:GND", "black", [ "h0" ] ],
+    [ "esp1:13", "servo1:PWM", "green", [ "h0" ] ],
+    [ "esp1:5V", "servo1:V+", "red", [ "h0" ] ],
+    [ "esp1:GND.1", "servo1:GND", "black", [ "h0" ] ],
+    [ "esp1:14", "bz1:2", "green", [ "h0" ] ],
+    [ "esp1:GND.2", "bz1:1", "black", [ "v0" ] ],
+    [ "esp1:21", "lcd1:SDA", "blue", [ "h0" ] ],
+    [ "esp1:22", "lcd1:SCL", "blue", [ "h0" ] ],
+    [ "esp1:5V", "lcd1:VCC", "red", [ "h0" ] ],
+    [ "esp1:GND.1", "lcd1:GND", "black", [ "h0" ] ]
+  ],
+  "serialMonitor": {
+    "display": "always",
+    "newline": "lf"
+  },
+  "dependencies": {}
+}
