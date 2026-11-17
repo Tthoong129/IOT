@@ -120,13 +120,13 @@ Broker: `broker.hivemq.com:1883` | Tiền tố: `parking_n4/`
 | `parking_n4/alert` | **Uplink** | Cảnh báo thẻ giả mạo/lạ | `{"type":"INVALID_CARD","uid":"99 99 99 99"}` |
 | `parking_n4/barie/cmd` | **Downlink** | Lệnh điều khiển từ xa từ Dashboard | `{"cmd":"open"}` / `{"cmd":"close"}` / `{"cmd":"fire"}` / `{"cmd":"nofire"}` |
 
-### 3.2. Thuật toán FSM & Tính năng An toàn Chống Kẹp Xe (Anti-Pinch)
-Firmware vận hành bằng máy trạng thái hữu hạn 6 trạng thái non-blocking:
-`STATE_IDLE` $\rightarrow$ `STATE_OPENING` $\rightarrow$ `STATE_OPEN` $\rightarrow$ `STATE_CLOSING` $\rightarrow$ `STATE_ALERT_HOLD` $\rightarrow$ `STATE_FIRE_EVACUATE`.
-
-* **Thuật toán Chống Kẹp Xe (Anti-Pinch Safety)**: Khi Barie đang mở (`STATE_OPEN`), trước khi đóng lại, hệ thống đọc khoảng cách từ cảm biến siêu âm HC-SR04:
-  - Nếu khoảng cách $< 15\text{ cm}$ (xe đang ở dưới cần barie): Tự động **hoãn lệnh đóng**, gia hạn thời gian mở và LCD cảnh báo: `XE DANG DI QUA - Giu mo barie...` để chống va chạm vào mui xe!
-  - Chỉ khi xe đã đi qua hẳn ($> 15\text{ cm}$), Barie mới hạ xuống an toàn và chuyển đèn Đỏ.
+### 3.2. Kiến Trúc Hướng Đối Tượng (OOP) & Thuật Toán Chống Kẹp Xe (Anti-Pinch)
+Mã nguồn nhúng ESP32 được cấu trúc theo mô hình hướng đối tượng (OOP) phân tách thành các subsystem độc lập:
+* **`GateController`**: Đóng gói điều khiển cánh tay chắn Servo, đèn tín hiệu giao thông LED và thuật toán an toàn chống kẹp xe thông qua cảm biến siêu âm HC-SR04. Khi barie mở, nếu khoảng cách vật cản $< 15\text{ cm}$ $\rightarrow$ tự động hoãn lệnh đóng và giữ mở cổng an toàn cho đến khi phương tiện qua hẳn.
+* **`EnvironmentService`**: Đóng gói cảm biến DHT22, tự động lấy mẫu nhiệt độ, độ ẩm định kỳ non-blocking và giám sát ngưỡng báo cháy ($\ge 50^\circ\text{C}$).
+* **`ParkingSystem`**: Quản lý cơ sở dữ liệu thẻ xe, kiểm tra sức chứa (Capacity), tính cước phí lưu đỗ, điều khiển màn hình LCD 1602 I2C và còi chíp Buzzer.
+* **`MqttService`**: Đóng gói kết nối Wi-Fi, MQTT PubSubClient, cơ chế tự động kết nối lại (Watchdog reconnect 5s), tuần tự hóa JSON và tiếp nhận lệnh điều khiển từ xa.
+* **`main.cpp`**: Khối điều phối trung tâm (~160 dòng) khởi tạo các dịch vụ và điều phối luồng sự kiện trong `loop()` hoàn toàn non-blocking.
 
 ### 3.3. Tự động hóa Node-RED: Sơ đồ 2D, VietQR & Báo Cháy
 1. **Sơ đồ bãi xe 2D (Interactive Live Slot Map)**: Tự động cập nhật 4 ô đỗ xe A-01 $\rightarrow$ A-04. Khi xe vào $\rightarrow$ Ô đỗ chuyển màu Đỏ/Cam hiển thị biển số xe. Khi xe ra $\rightarrow$ Ô đỗ chuyển màu Xanh lá "TRỐNG".
