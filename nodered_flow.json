@@ -1,0 +1,1127 @@
+[
+  {
+    "id": "tab1",
+    "type": "tab",
+    "label": "Parking Application M3 - Tuần 7",
+    "disabled": false,
+    "info": "Hệ thống Bãi Giữ Xe Thông Minh ESP32 - Tầng 4 Application & Automation Nâng Cao (Tuần 7: Overstay Timeout, Sức Chứa Lot Full, Thẻ Lạ Quẹt Liên Tiếp, Tự Đóng Barie Kẹt Downlink)"
+  },
+  {
+    "id": "broker1",
+    "type": "mqtt-broker",
+    "name": "HiveMQ Broker",
+    "broker": "broker.hivemq.com",
+    "port": "1883",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true
+  },
+  {
+    "id": "ui_tab_parking",
+    "type": "ui_tab",
+    "name": "Bãi Giữ Xe Thông Minh",
+    "icon": "dashboard",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "ui_group_monitor",
+    "type": "ui_group",
+    "name": "Giám Sát Bãi Xe (Thời Gian Thực)",
+    "tab": "ui_tab_parking",
+    "order": 1,
+    "disp": true,
+    "width": "6",
+    "collapse": false
+  },
+  {
+    "id": "ui_group_control",
+    "type": "ui_group",
+    "name": "Điều Khiển Barie & Cảnh Báo",
+    "tab": "ui_tab_parking",
+    "order": 2,
+    "disp": true,
+    "width": "6",
+    "collapse": false
+  },
+  {
+    "id": "ui_group_history",
+    "type": "ui_group",
+    "name": "Lịch Sử Vào / Ra & Cảnh Báo",
+    "tab": "ui_tab_parking",
+    "order": 5,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "in_scan",
+    "type": "mqtt in",
+    "z": "tab1",
+    "name": "RFID Scan In",
+    "topic": "parking_n4/rfid/scan",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "broker1",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 110,
+    "y": 100,
+    "wires": [
+      [
+        "check",
+        "fn_slot_map",
+        "fn_analytics_db"
+      ]
+    ]
+  },
+  {
+    "id": "check",
+    "type": "function",
+    "z": "tab1",
+    "name": "Check Card (Rule 2 & 3)",
+    "func": "const CAPACITY = 2;\nconst INVALID_LIMIT = 3;\nconst WINDOW_MS = 60000;\n\nlet p = msg.payload;\nif (typeof p === 'string') {\n  try { p = JSON.parse(p); } catch (e) { p = { uid: p }; }\n}\nlet rawUid = (p && p.uid) ? String(p.uid) : (typeof p === 'string' ? p : '');\nlet match = rawUid.match(/[0-9A-Fa-f]{2}(?:[ :][0-9A-Fa-f]{2}){3}/);\nlet uid = match ? match[0].replace(/:/g, ' ').toUpperCase() : rawUid.replace(/scan/gi, '').trim().toUpperCase();\nif (!uid) return null;\n\nlet valid = flow.get('validUIDs') || [\n  \"01 02 03 04\", \"A3 5C 12 F0\", \"B4 22 9A 01\", \"DE AD BE EF\",\n  \"11 22 33 44\", \"AA BB CC DD\", \"12 34 56 78\", \"55 66 77 88\"\n];\nlet inside = flow.get('inside') || {};\nlet warned = flow.get('warned') || {};\nlet now = Date.now();\n\nlet isInvalid = false;\nif (p && p.action === 'invalid') {\n  isInvalid = true;\n} else if (!valid.includes(uid)) {\n  isInvalid = true;\n}\n\nif (isInvalid) {\n  let bad = (flow.get('bad') || []).filter(t => now - t < WINDOW_MS);\n  bad.push(now);\n  flow.set('bad', bad);\n  node.status({fill:\"red\", shape:\"dot\", text:\"INVALID \" + uid});\n  let msgs = [{payload:{event:\"INVALID_CARD\", uid:uid}}];\n  if (bad.length >= INVALID_LIMIT) {\n    msgs.push({payload:{event:\"REPEATED_INVALID\", uid:uid, count:bad.length}});\n    flow.set('bad', []);\n  }\n  return [null, msgs];\n}\n\nlet msgs = [];\nif (p && p.action === 'check_out') {\n  let mins = p.durationSec ? Math.round(p.durationSec / 6) / 10 : (inside[uid] ? Math.round((now - inside[uid]) / 6000) / 10 : 0.1);\n  delete inside[uid];\n  delete warned[uid];\n  msgs.push({payload:{event:\"VEHICLE_OUT\", uid:uid, duration_min:mins, fee:p.fee||5000, plate:p.licensePlate, owner:p.ownerName}});\n} else if (p && p.action === 'check_in') {\n  inside[uid] = now;\n  msgs.push({payload:{event:\"VEHICLE_IN\", uid:uid, plate:p.licensePlate, owner:p.ownerName}});\n  let count = Object.keys(inside).length;\n  if (count >= CAPACITY) {\n    msgs.push({payload:{event:\"LOT_FULL\", count:count, capacity:CAPACITY}});\n  }\n} else {\n  if (inside[uid]) {\n    let mins = Math.round((now - inside[uid]) / 6000) / 10;\n    delete inside[uid];\n    delete warned[uid];\n    msgs.push({payload:{event:\"VEHICLE_OUT\", uid:uid, duration_min:mins}});\n  } else {\n    inside[uid] = now;\n    msgs.push({payload:{event:\"VEHICLE_IN\", uid:uid}});\n    let count = Object.keys(inside).length;\n    if (count >= CAPACITY) {\n      msgs.push({payload:{event:\"LOT_FULL\", count:count, capacity:CAPACITY}});\n    }\n  }\n}\nflow.set('inside', inside);\nflow.set('warned', warned);\nnode.status({fill:\"green\", shape:\"dot\", text:msgs[0].payload.event});\nreturn [msgs, null];",
+    "outputs": 2,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 350,
+    "y": 100,
+    "wires": [
+      [
+        "fmt",
+        "update_stats",
+        "fn_receipt",
+        "fn_banner_alert",
+        "fn_alert_toast"
+      ],
+      [
+        "fmt",
+        "update_stats",
+        "fn_alert_toast",
+        "fn_banner_alert"
+      ]
+    ]
+  },
+  {
+    "id": "fn_alert_toast",
+    "type": "function",
+    "z": "tab1",
+    "name": "Alert Toast Function",
+    "func": "let e = msg.payload;\nif (typeof e === 'string') {\n  try { e = JSON.parse(e); } catch (err) {}\n}\nif (!e || !e.event) return null;\n\nconst text = {\n  INVALID_CARD: \"Thẻ lạ: \" + (e.uid || ''),\n  OVERSTAY: \"Xe gửi quá lâu: \" + (e.uid || '') + \" (\" + e.duration_min + \" phút)\",\n  LOT_FULL: \"Bãi đầy: \" + e.count + \"/\" + e.capacity,\n  REPEATED_INVALID: \"Thẻ lạ quẹt \" + e.count + \" lần liên tiếp\",\n  BARRIER_STUCK: \"Barie mở quá lâu, đã gửi lệnh đóng\"\n};\n\nif (!text[e.event]) return null;\n\nlet title = \"CẢNH BÁO AN NINH\";\nlet sub = \"ĐÃ TỪ CHỐI & KHÓA BARIE!\";\nlet highlightColor = \"#b71c1c\";\n\nif (e.event === 'OVERSTAY') {\n  title = \"⏰ CẢNH BÁO TIMEOUT (QUÁ GIỜ)\";\n  sub = \"Vượt quá thời gian gửi quy định (30 giây)!\";\n  highlightColor = \"#d35400\";\n} else if (e.event === 'LOT_FULL') {\n  title = \"CẢNH BÁO SỨC CHỨA (BÃI ĐẦY)\";\n  sub = \"Đã đạt giới hạn sức chứa bãi xe!\";\n  highlightColor = \"#c0392b\";\n} else if (e.event === 'REPEATED_INVALID') {\n  title = \"CẢNH BÁO BẤT THƯỜNG (SPAM THẺ LẠ)\";\n  sub = \"Phát hiện quẹt thẻ không hợp lệ 3 lần liên tiếp!\";\n  highlightColor = \"#8e44ad\";\n} else if (e.event === 'BARRIER_STUCK') {\n  title = \"CẢNH BÁO SỰ CỐ BARIE KẸT MỞ\";\n  sub = \"Tự động kích hoạt cơ chế Downlink đóng barie!\";\n  highlightColor = \"#b71c1c\";\n}\n\nlet toastHtml = `\n<div style=\"background: ${highlightColor}; color: #ffffff; padding: 14px 18px; border-radius: 10px; border: 2px solid #ffeb3b; box-shadow: 0 8px 25px rgba(0,0,0,0.6); min-width: 290px; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;\">\n  <div style=\"font-size: 16px; font-weight: bold; color: #ffffff; margin-bottom: 6px;\">\n    ${title}\n  </div>\n  <div style=\"font-size: 15px; font-weight: bold; color: #fff59d; margin-bottom: 6px; background: rgba(0,0,0,0.3); padding: 6px 10px; border-radius: 5px;\">\n    ${text[e.event]}\n  </div>\n  <div style=\"font-size: 12px; color: #ffcdd2; font-weight: bold;\">\n    ${sub}\n  </div>\n</div>\n`;\n\nreturn {\n  payload: toastHtml,\n  topic: text[e.event],\n  highlight: highlightColor\n};",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 620,
+    "y": 60,
+    "wires": [
+      [
+        "ui_toast_alert"
+      ]
+    ]
+  },
+  {
+    "id": "ui_toast_alert",
+    "type": "ui_toast",
+    "z": "tab1",
+    "position": "top right",
+    "displayTime": "8",
+    "highlight": "#b71c1c",
+    "sendall": true,
+    "outputs": 0,
+    "ok": "ĐÃ HIỂU",
+    "cancel": "",
+    "raw": true,
+    "className": "",
+    "topic": "Cảnh Báo An Ninh",
+    "name": "Cảnh Báo Thông Báo (Toast)",
+    "x": 890,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "fn_banner_alert",
+    "type": "function",
+    "z": "tab1",
+    "name": "Security Banner Format",
+    "func": "let e = msg.payload;\nif (typeof e === 'string') {\n  try { e = JSON.parse(e); } catch (err) {}\n}\n\nlet banner = \"\";\nlet t = new Date().toLocaleTimeString('vi-VN');\n\nif (e && e.event === 'INVALID_CARD') {\n  banner = `<div style='background: #c0392b; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #f1c40f;'><div style='font-size:15px; margin-bottom:3px;'>[CẢNH BÁO: THẺ LẠ]</div><div style='font-size:13px; color:#ffeaa7;'>UID: <b>${e.uid}</b> - Lúc ${t} | Đã từ chối truy cập!</div></div>`;\n} else if (e && e.event === 'REPEATED_INVALID') {\n  banner = `<div style='background: #8e44ad; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #f39c12;'><div style='font-size:15px; margin-bottom:3px;'>[BẤT THƯỜNG: SPAM THẺ LẠ LIÊN TIẾP]</div><div style='font-size:13px; color:#f5eef8;'>UID: <b>${e.uid}</b> đã quẹt <b>${e.count} lần</b> trong 60s!</div></div>`;\n} else if (e && e.event === 'OVERSTAY') {\n  banner = `<div style='background: #d35400; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #f39c12;'><div style='font-size:15px; margin-bottom:3px;'>⏰ [CẢNH BÁO: XE GỬI QUÁ LÂU]</div><div style='font-size:13px; color:#fdebd0;'>Xe <b>${e.uid}</b> gửi <b>${e.duration_min} phút</b> (> 0.5 phút) - Lúc ${t}</div></div>`;\n} else if (e && e.event === 'LOT_FULL') {\n  banner = `<div style='background: #c0392b; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #e74c3c;'><div style='font-size:15px; margin-bottom:3px;'>[CẢNH BÁO: BÃI ĐÃ ĐẦY]</div><div style='font-size:13px; color:#ffebee;'>Đã đạt sức chứa tối đa: <b>${e.count}/${e.capacity} xe</b>!</div></div>`;\n} else if (e && e.event === 'BARRIER_STUCK') {\n  banner = `<div style='background: #b71c1c; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #ffeb3b;'><div style='font-size:15px; margin-bottom:3px;'>[SỰ CỐ: BARIE KẸT MỞ QUÁ LÂU]</div><div style='font-size:13px; color:#fff9c4;'>Đã tự động gửi lệnh ĐÓNG barie an toàn lúc ${t}!</div></div>`;\n} else if (e && (e.event === 'VEHICLE_IN' || e.event === 'VEHICLE_OUT')) {\n  banner = `<div style='background: #27ae60; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #2ecc71;'><div style='font-size:15px; margin-bottom:2px;'>[AN NINH TRỰC THỜI GIAN THỰC]</div><div style='font-size:13px; font-weight:normal; color:#e8f8f5;'>Lượt quét: ${e.event} (${e.uid}) lúc ${t}</div></div>`;\n}\n\nif (banner) {\n  msg.payload = banner;\n  return msg;\n}\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 630,
+    "y": 120,
+    "wires": [
+      [
+        "ui_template_security"
+      ]
+    ]
+  },
+  {
+    "id": "ui_template_security",
+    "type": "ui_template",
+    "z": "tab1",
+    "group": "ui_group_control",
+    "name": "Banner Trạng Thái An Ninh",
+    "order": 1,
+    "width": 6,
+    "height": 2,
+    "format": "<div ng-if=\"!msg.payload\" style=\"background: #27ae60; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: bold; border-left: 6px solid #2ecc71;\"><div style=\"font-size:15px; margin-bottom:2px;\">[AN NINH TRỰC THỜI GIAN THỰC]</div><div style=\"font-size:13px; font-weight:normal; color:#e8f8f5;\">Hệ thống an toàn - Đang giám sát cổng vào/ra</div></div><div ng-if=\"msg.payload\" ng-bind-html=\"msg.payload\"></div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 900,
+    "y": 120,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "fn_receipt",
+    "type": "function",
+    "z": "tab1",
+    "name": "Format Receipt",
+    "func": "let e = msg.payload;\nif (!e || e.event !== 'VEHICLE_OUT') return null;\nreturn { payload: 'Thẻ ' + e.uid + ' | gửi ' + e.duration_min + ' phút | ' +\n         new Date().toLocaleTimeString('vi-VN') };",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 600,
+    "y": 180,
+    "wires": [
+      [
+        "ui_text_receipt"
+      ]
+    ]
+  },
+  {
+    "id": "ui_text_receipt",
+    "type": "ui_text",
+    "z": "tab1",
+    "group": "ui_group_monitor",
+    "order": 3,
+    "width": 6,
+    "height": 2,
+    "name": "Biên nhận gần nhất",
+    "label": "Biên Nhận Gần Nhất",
+    "format": "<span style='color:#009688; font-weight:bold; font-size:14px;'>{{msg.payload || 'Chưa có lượt xe ra'}}</span>",
+    "layout": "row-spread",
+    "className": "",
+    "x": 880,
+    "y": 180,
+    "wires": []
+  },
+  {
+    "id": "update_stats",
+    "type": "function",
+    "z": "tab1",
+    "name": "Update Stats (Dashboard)",
+    "func": "let inside = flow.get('inside') || {};\nlet hist = flow.get('hist') || [];\nlet e = msg.payload;\nif (typeof e === 'string') {\n  try { e = JSON.parse(e); } catch (err) {}\n}\nlet detail = '';\nif (e.uid) detail += ' ' + e.uid;\nif (e.duration_min !== undefined) detail += ' (' + e.duration_min + ' phút)';\nif (e.count !== undefined && e.capacity !== undefined) detail += ' (' + e.count + '/' + e.capacity + ')';\nif (e.count !== undefined && e.capacity === undefined) detail += ' (' + e.count + ' lần)';\nhist.unshift(new Date().toLocaleTimeString('vi-VN') + ' ' + (e.event || e.type || 'EVENT') + detail);\nhist = hist.slice(0, 10);\nflow.set('hist', hist);\nreturn [\n  { payload: Object.keys(inside).length },\n  { payload: hist.join('\\n') }\n];",
+    "outputs": 2,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 630,
+    "y": 240,
+    "wires": [
+      [
+        "ui_gauge_vehicles"
+      ],
+      [
+        "ui_template_hist"
+      ]
+    ]
+  },
+  {
+    "id": "ui_gauge_vehicles",
+    "type": "ui_gauge",
+    "z": "tab1",
+    "name": "Số Xe Trong Bãi",
+    "group": "ui_group_monitor",
+    "order": 1,
+    "width": 6,
+    "height": 4,
+    "gtype": "gage",
+    "title": "Số Xe Trong Bãi",
+    "label": "xe",
+    "format": "{{value}} / 2",
+    "min": 0,
+    "max": 2,
+    "colors": [
+      "#2ecc71",
+      "#f39c12",
+      "#e74c3c"
+    ],
+    "seg1": "1",
+    "seg2": "2",
+    "diff": false,
+    "className": "",
+    "x": 880,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "ui_template_hist",
+    "type": "ui_template",
+    "z": "tab1",
+    "group": "ui_group_history",
+    "name": "Lịch Sử Vào Ra Gần Nhất",
+    "order": 1,
+    "width": 12,
+    "height": 5,
+    "format": "<div style='background:#181b20; border-radius:8px; padding:12px; font-family:Courier New, monospace;'>\n  <div style='color:#00ff99; font-weight:bold; margin-bottom:8px;'>[NHẬT KÝ VÀO / RA & CẢNH BÁO THỜI GIAN THỰC]</div>\n  <pre style='color:#e0e0e0; font-size:13px; line-height:1.6; margin:0; white-space:pre-wrap;'>{{msg.payload || 'Chưa có dữ liệu phương tiện'}}</pre>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 900,
+    "y": 290,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "in_status",
+    "type": "mqtt in",
+    "z": "tab1",
+    "name": "Barie Status In",
+    "topic": "parking_n4/barie/status",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "broker1",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 110,
+    "y": 350,
+    "wires": [
+      [
+        "fmt",
+        "fmt_barie_status",
+        "fn_track_status"
+      ]
+    ]
+  },
+  {
+    "id": "fmt_barie_status",
+    "type": "function",
+    "z": "tab1",
+    "name": "Format Barie Status",
+    "func": "let p = msg.payload;\nif (typeof p === 'string') {\n  try { p = JSON.parse(p); } catch (e) {}\n}\nlet state = (typeof p === 'object' && p !== null) ? (p.state || JSON.stringify(p)) : p;\nif (typeof state === 'string') {\n  state = state.trim().toLowerCase();\n}\n\nif (state === 'open' || state === 'mo') {\n  msg.payload = 'ĐANG MỞ (OPEN)';\n} else if (state === 'closed' || state === 'dong') {\n  msg.payload = 'ĐANG ĐÓNG (CLOSED)';\n} else {\n  msg.payload = '' + state;\n}\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 350,
+    "wires": [
+      [
+        "ui_text_barie"
+      ]
+    ]
+  },
+  {
+    "id": "ui_text_barie",
+    "type": "ui_text",
+    "z": "tab1",
+    "group": "ui_group_monitor",
+    "order": 2,
+    "width": 6,
+    "height": 2,
+    "name": "Hiển Thị Barie",
+    "label": "Trạng Thái Barie",
+    "format": "<span style='font-size:16px; font-weight:bold;'>{{msg.payload || 'ĐANG ĐÓNG (CLOSED)'}}</span>",
+    "layout": "row-spread",
+    "className": "",
+    "x": 880,
+    "y": 350,
+    "wires": []
+  },
+  {
+    "id": "init_status",
+    "type": "inject",
+    "z": "tab1",
+    "name": "Khởi tạo trạng thái Đóng",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.5,
+    "topic": "",
+    "payload": "{\"state\":\"closed\"}",
+    "payloadType": "json",
+    "x": 140,
+    "y": 400,
+    "wires": [
+      [
+        "fmt_barie_status"
+      ]
+    ]
+  },
+  {
+    "id": "fn_track_status",
+    "type": "function",
+    "z": "tab1",
+    "name": "Track Status (Rule 4)",
+    "func": "let p = msg.payload;\nif (typeof p === 'string') {\n  try { p = JSON.parse(p); } catch (e) {}\n}\nlet s = (typeof p === 'object' && p !== null) ? p.state : p;\nif (typeof s === 'string') s = s.trim().toLowerCase();\nflow.set('barrierOpenAt', s === \"open\" ? Date.now() : null);\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 400,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "inject_overstay",
+    "type": "inject",
+    "z": "tab1",
+    "name": "Inject 5s (Overstay Check)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 140,
+    "y": 460,
+    "wires": [
+      [
+        "fn_overstay"
+      ]
+    ]
+  },
+  {
+    "id": "fn_overstay",
+    "type": "function",
+    "z": "tab1",
+    "name": "Overstay Check (Rule 1)",
+    "func": "const LIMIT_MIN = 0.5;\nlet inside = flow.get('inside') || {};\nlet warned = flow.get('warned') || {};\nlet now = Date.now();\nlet alerts = [];\nfor (let uid in inside) {\n  let mins = (now - inside[uid]) / 60000;\n  if (mins > LIMIT_MIN && !warned[uid]) {\n    warned[uid] = true;\n    alerts.push({payload:{event:\"OVERSTAY\", uid:uid,\n      duration_min:Math.round(mins*10)/10}});\n  }\n}\nflow.set('warned', warned);\nif (alerts.length > 0) {\n  node.status({fill:\"yellow\", shape:\"dot\", text:\"OVERSTAY: \" + alerts.length + \" xe\"});\n  return [alerts];\n}\nnode.status({fill:\"grey\", shape:\"ring\", text:\"ok\"});\nreturn [null];",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 460,
+    "wires": [
+      [
+        "fmt",
+        "fn_alert_toast",
+        "fn_banner_alert",
+        "update_stats"
+      ]
+    ]
+  },
+  {
+    "id": "inject_barrier_watch",
+    "type": "inject",
+    "z": "tab1",
+    "name": "Inject 5s (Barrier Watch)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 2,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 140,
+    "y": 520,
+    "wires": [
+      [
+        "fn_barrier_watch"
+      ]
+    ]
+  },
+  {
+    "id": "fn_barrier_watch",
+    "type": "function",
+    "z": "tab1",
+    "name": "Barrier Watch (Rule 4)",
+    "func": "const MAX_OPEN_MS = 10000;\nlet t = flow.get('barrierOpenAt');\nif (t && Date.now() - t > MAX_OPEN_MS) {\n  flow.set('barrierOpenAt', null);\n  node.status({fill:\"red\", shape:\"dot\", text:\"STUCK -> AUTO CLOSE\"});\n  return [{payload:{cmd:\"close\"}}, {payload:{event:\"BARRIER_STUCK\"}}];\n}\nnode.status({fill:\"grey\", shape:\"ring\", text:\"idle\"});\nreturn [null, null];",
+    "outputs": 2,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 520,
+    "wires": [
+      [
+        "out_cmd"
+      ],
+      [
+        "fmt",
+        "fn_alert_toast",
+        "fn_banner_alert",
+        "update_stats"
+      ]
+    ]
+  },
+  {
+    "id": "fmt",
+    "type": "function",
+    "z": "tab1",
+    "name": "Format Event Log",
+    "func": "let p = msg.payload;\nif (typeof p === 'string') {\n  try { p = JSON.parse(p); } catch (e) {}\n}\nlet t = new Date().toLocaleString('vi-VN');\nlet line;\nif (p && p.event) {\n  line = '['+t+'] [EVENT] '+p.event;\n  if (p.uid) line += ' uid=' + p.uid;\n  if (p.duration_min !== undefined) line += ' duration=' + p.duration_min + 'min';\n  if (p.count !== undefined) line += ' count=' + p.count;\n  if (p.capacity !== undefined) line += ' capacity=' + p.capacity;\n} else if (p && p.state) {\n  line = '['+t+'] [STATUS] barie='+p.state;\n} else if (p && p.type) {\n  line = '['+t+'] [ALERT] '+p.type+' uid='+(p.uid||'-');\n} else {\n  line = '['+t+'] [RAW] '+(typeof p === 'object' ? JSON.stringify(p) : p);\n}\nmsg.payload = line + '\\n';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 630,
+    "y": 460,
+    "wires": [
+      [
+        "save",
+        "dbg"
+      ]
+    ]
+  },
+  {
+    "id": "save",
+    "type": "file",
+    "z": "tab1",
+    "name": "Save Event History",
+    "filename": "D:/HocHe/IOT/Project/Bai_Giu_Xe/parking_log.txt",
+    "filenameType": "str",
+    "appendNewline": false,
+    "createDir": true,
+    "overwriteFile": "false",
+    "encoding": "none",
+    "x": 880,
+    "y": 440,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "dbg",
+    "type": "debug",
+    "z": "tab1",
+    "name": "Event History Debug",
+    "active": true,
+    "tosidebar": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "x": 880,
+    "y": 490,
+    "wires": []
+  },
+  {
+    "id": "in_alert",
+    "type": "mqtt in",
+    "z": "tab1",
+    "name": "Alert In",
+    "topic": "parking_n4/alert",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "broker1",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "x": 110,
+    "y": 580,
+    "wires": [
+      [
+        "fmt"
+      ]
+    ]
+  },
+  {
+    "id": "inject_open_hold",
+    "type": "inject",
+    "z": "tab1",
+    "name": "Mở giữ (mô phỏng kẹt)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "topic": "",
+    "payload": "{\"cmd\":\"open_hold\"}",
+    "payloadType": "json",
+    "x": 140,
+    "y": 640,
+    "wires": [
+      [
+        "out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_open",
+    "type": "ui_button",
+    "z": "tab1",
+    "name": "Nút Mở Barie (Dashboard)",
+    "group": "ui_group_control",
+    "order": 2,
+    "width": 2,
+    "height": 2,
+    "passthru": false,
+    "label": "MỞ",
+    "tooltip": "Gửi lệnh mở barie từ xa qua MQTT",
+    "color": "#ffffff",
+    "bgcolor": "#27ae60",
+    "icon": "fa-arrow-up",
+    "payload": "{\"cmd\":\"open\"}",
+    "payloadType": "json",
+    "topic": "",
+    "topicType": "str",
+    "x": 150,
+    "y": 700,
+    "wires": [
+      [
+        "out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_close",
+    "type": "ui_button",
+    "z": "tab1",
+    "name": "Nút Đóng Barie (Dashboard)",
+    "group": "ui_group_control",
+    "order": 3,
+    "width": 2,
+    "height": 2,
+    "passthru": false,
+    "label": "ĐÓNG",
+    "tooltip": "Gửi lệnh đóng barie từ xa qua MQTT",
+    "color": "#ffffff",
+    "bgcolor": "#c0392b",
+    "icon": "fa-arrow-down",
+    "payload": "{\"cmd\":\"close\"}",
+    "payloadType": "json",
+    "topic": "",
+    "topicType": "str",
+    "x": 150,
+    "y": 750,
+    "wires": [
+      [
+        "out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_open_hold",
+    "type": "ui_button",
+    "z": "tab1",
+    "name": "Nút Mở Giữ Barie (Kẹt)",
+    "group": "ui_group_control",
+    "order": 4,
+    "width": 2,
+    "height": 2,
+    "passthru": false,
+    "label": "MỞ GIỮ (KẸT)",
+    "tooltip": "Mô phỏng sự cố barie kẹt mở quá 10s để Node-RED tự động gửi lệnh đóng",
+    "color": "#ffffff",
+    "bgcolor": "#e67e22",
+    "icon": "fa-exclamation-triangle",
+    "payload": "{\"cmd\":\"open_hold\"}",
+    "payloadType": "json",
+    "topic": "",
+    "topicType": "str",
+    "x": 160,
+    "y": 800,
+    "wires": [
+      [
+        "out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "out_cmd",
+    "type": "mqtt out",
+    "z": "tab1",
+    "name": "MQTT Out Cmd to ESP32",
+    "topic": "parking_n4/barie/cmd",
+    "qos": "0",
+    "retain": "false",
+    "broker": "broker1",
+    "x": 510,
+    "y": 720,
+    "wires": []
+  },
+  {
+    "id": "ui_group_slots",
+    "type": "ui_group",
+    "name": "Sơ Đồ Bãi Xe & Thanh Toán VietQR",
+    "tab": "ui_tab_parking",
+    "order": 3,
+    "disp": true,
+    "width": "6",
+    "collapse": false
+  },
+  {
+    "id": "ui_group_env",
+    "type": "ui_group",
+    "name": "Quan Trắc Môi Trường & PCCC Hầm Xe",
+    "tab": "ui_tab_parking",
+    "order": 4,
+    "disp": true,
+    "width": "6",
+    "collapse": false
+  },
+  {
+    "id": "fn_slot_map",
+    "type": "function",
+    "z": "tab1",
+    "name": "Live Slot Map Engine",
+    "func": "let p = msg.payload;\nif (typeof p === 'string') {\n  try { p = JSON.parse(p); } catch (e) {}\n}\n\nlet slots = flow.get('slots') || [\n  { id: \"A-01\", occupied: false, plate: \"\", time: \"\" },\n  { id: \"A-02\", occupied: false, plate: \"\", time: \"\" },\n  { id: \"A-03\", occupied: false, plate: \"\", time: \"\" },\n  { id: \"A-04\", occupied: false, plate: \"\", time: \"\" }\n];\n\nlet qrData = null;\n\nif (p && p.action === 'check_in') {\n  let empty = slots.find(s => !s.occupied);\n  if (empty) {\n    empty.occupied = true;\n    empty.plate = p.licensePlate || p.uid;\n    empty.time = new Date().toLocaleTimeString('vi-VN');\n  }\n} else if (p && p.action === 'check_out') {\n  let target = slots.find(s => s.plate === (p.licensePlate || p.uid));\n  if (!target) target = slots.find(s => s.occupied);\n  if (target) {\n    target.occupied = false;\n    target.plate = \"\";\n    target.time = \"\";\n  }\n  qrData = {\n    fee: p.fee || 5000,\n    plate: p.licensePlate || p.uid,\n    duration: p.durationSec || 20\n  };\n}\n\nflow.set('slots', slots);\n\n// Generate Slot Map HTML\nlet html = '<div style=\"display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:6px;\">';\nfor (let s of slots) {\n  let bg = s.occupied ? '#b71c1c' : '#1b5e20';\n  let border = s.occupied ? '#ff5252' : '#69f0ae';\n  let status = s.occupied ? ('' + s.plate) : 'TRỐNG';\n  let sub = s.occupied ? ('Vào: ' + s.time) : 'Sẵn sàng';\n  html += `\n  <div style=\"background:${bg}; border:2px solid ${border}; border-radius:8px; padding:12px; text-align:center; box-shadow:0 4px 12px rgba(0,0,0,0.4);\">\n    <div style=\"font-size:16px; font-weight:bold; color:#ffffff; margin-bottom:4px;\">Ô ĐỖ ${s.id}</div>\n    <div style=\"font-size:14px; font-weight:bold; color:#fff59d;\">${status}</div>\n    <div style=\"font-size:11px; color:#cfd8dc; margin-top:4px;\">${sub}</div>\n  </div>`;\n}\nhtml += '</div>';\n\nlet msgMap = { payload: html };\nlet msgQr = qrData ? { payload: qrData } : null;\n\nreturn [msgMap, msgQr];\n",
+    "outputs": 2,
+    "x": 620,
+    "y": 150,
+    "wires": [
+      [
+        "ui_slot_map"
+      ],
+      [
+        "fn_vietqr"
+      ]
+    ]
+  },
+  {
+    "id": "ui_slot_map",
+    "type": "ui_template",
+    "z": "tab1",
+    "group": "ui_group_slots",
+    "name": "Sơ Đồ Mặt Bằng Bãi Xe 2D",
+    "order": 1,
+    "width": 6,
+    "height": 5,
+    "format": "<div ng-bind-html=\"msg.payload\"></div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "x": 900,
+    "y": 140,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "fn_vietqr",
+    "type": "function",
+    "z": "tab1",
+    "name": "VietQR Payment Generator",
+    "func": "let p = msg.payload;\nif (!p || !p.fee) return null;\n\nlet fee = p.fee;\nlet plate = encodeURIComponent(p.plate || \"XE\");\nlet qrUrl = `https://img.vietqr.io/image/MB-0987654321-compact2.png?amount=${fee}&addInfo=Phi%20gui%20xe%20${plate}&accountName=BAI%20XE%20THONG%20MINH`;\n\nlet html = `\n<div style=\"background:#212529; border:2px solid #00e676; border-radius:10px; padding:12px; text-align:center; margin-top:6px;\">\n  <div style=\"color:#00e676; font-size:15px; font-weight:bold; margin-bottom:4px;\">QUÉT MÃ VIETQR ĐỂ TRẢ PHÍ</div>\n  <div style=\"color:#ffffff; font-size:14px; margin-bottom:8px;\">Số tiền: <b style=\"color:#ffd54f; font-size:17px;\">${fee.toLocaleString('vi-VN')} VNĐ</b></div>\n  <img src=\"${qrUrl}\" style=\"max-width:180px; width:100%; border-radius:6px; box-shadow:0 4px 15px rgba(0,0,0,0.5);\"/>\n  <div style=\"color:#b0bec5; font-size:11px; margin-top:6px;\">Tự động xác nhận giao dịch qua Ngân hàng</div>\n</div>\n`;\n\nreturn { payload: html };\n",
+    "outputs": 1,
+    "x": 640,
+    "y": 200,
+    "wires": [
+      [
+        "ui_vietqr"
+      ]
+    ]
+  },
+  {
+    "id": "ui_vietqr",
+    "type": "ui_template",
+    "z": "tab1",
+    "group": "ui_group_slots",
+    "name": "Mã QR Thanh Toán Tự Động",
+    "order": 2,
+    "width": 6,
+    "height": 6,
+    "format": "<div ng-if=\"!msg.payload\" style=\"text-align:center; color:#90a4ae; padding:30px; font-size:13px;\">Sẵn sàng tạo mã VietQR thanh toán khi có xe ra bãi</div><div ng-if=\"msg.payload\" ng-bind-html=\"msg.payload\"></div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "x": 900,
+    "y": 200,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "in_env",
+    "type": "mqtt in",
+    "z": "tab1",
+    "name": "Environment Telemetry In",
+    "topic": "parking_n4/env",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "broker1",
+    "x": 130,
+    "y": 860,
+    "wires": [
+      [
+        "fn_parse_env"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_env",
+    "type": "function",
+    "z": "tab1",
+    "name": "Parse Env Data",
+    "func": "let p = msg.payload;\nif (typeof p === 'string') {\n  try { p = JSON.parse(p); } catch (e) { return null; }\n}\nif (!p) return null;\n\nlet temp = p.temp || 28;\nlet hum = p.humidity || 65;\nlet risk = p.fireRisk || \"NORMAL\";\n\nlet riskText = \"AN TOÀN\";\nlet riskColor = \"#2ecc71\";\nif (risk === \"DANGER_FIRE\") {\n  riskText = \"HỎA HOẠN KHẨN CẤP!\";\n  riskColor = \"#e74c3c\";\n} else if (risk === \"WARNING_HIGH_TEMP\") {\n  riskText = \"NGUY CƠ CAO (QUÁ NHIỆT)\";\n  riskColor = \"#e67e22\";\n}\n\nlet riskHtml = `<div style=\"background:${riskColor}; color:#ffffff; padding:10px; border-radius:6px; font-weight:bold; text-align:center; font-size:15px;\">PCCC: ${riskText}</div>`;\n\nreturn [\n  { payload: temp },\n  { payload: hum },\n  { payload: riskHtml }\n];\n",
+    "outputs": 3,
+    "x": 380,
+    "y": 860,
+    "wires": [
+      [
+        "ui_gauge_temp"
+      ],
+      [
+        "ui_gauge_hum"
+      ],
+      [
+        "ui_text_risk"
+      ]
+    ]
+  },
+  {
+    "id": "ui_gauge_temp",
+    "type": "ui_gauge",
+    "z": "tab1",
+    "name": "Nhiệt Độ Hầm Xe",
+    "group": "ui_group_env",
+    "order": 1,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Nhiệt Độ",
+    "label": "°C",
+    "format": "{{value}} °C",
+    "min": 0,
+    "max": 80,
+    "colors": [
+      "#2ecc71",
+      "#f39c12",
+      "#e74c3c"
+    ],
+    "seg1": "35",
+    "seg2": "50",
+    "x": 630,
+    "y": 830,
+    "wires": []
+  },
+  {
+    "id": "ui_gauge_hum",
+    "type": "ui_gauge",
+    "z": "tab1",
+    "name": "Độ Ẩm Hầm Xe",
+    "group": "ui_group_env",
+    "order": 2,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Độ Ẩm",
+    "label": "%",
+    "format": "{{value}} %",
+    "min": 0,
+    "max": 100,
+    "colors": [
+      "#3498db",
+      "#2ecc71",
+      "#e67e22"
+    ],
+    "seg1": "40",
+    "seg2": "75",
+    "x": 630,
+    "y": 870,
+    "wires": []
+  },
+  {
+    "id": "ui_text_risk",
+    "type": "ui_template",
+    "z": "tab1",
+    "group": "ui_group_env",
+    "name": "Trạng Thái PCCC Hầm Xe",
+    "order": 3,
+    "width": 6,
+    "height": 1,
+    "format": "<div ng-bind-html=\"msg.payload\"></div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "x": 650,
+    "y": 910,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_btn_fire",
+    "type": "ui_button",
+    "z": "tab1",
+    "name": "Nút Báo Cháy Khẩn Cấp",
+    "group": "ui_group_env",
+    "order": 4,
+    "width": 3,
+    "height": 2,
+    "passthru": false,
+    "label": "BÁO CHÁY (SƠ TÁN)",
+    "tooltip": "Kích hoạt báo cháy: Mở toang Barie 90 độ và phát còi hú thoát hiểm!",
+    "color": "#ffffff",
+    "bgcolor": "#b71c1c",
+    "icon": "fa-fire",
+    "payload": "{\"cmd\":\"fire\"}",
+    "payloadType": "json",
+    "topic": "",
+    "topicType": "str",
+    "x": 160,
+    "y": 940,
+    "wires": [
+      [
+        "out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "ui_btn_nofire",
+    "type": "ui_button",
+    "z": "tab1",
+    "name": "Nút Tắt Báo Cháy",
+    "group": "ui_group_env",
+    "order": 5,
+    "width": 3,
+    "height": 2,
+    "passthru": false,
+    "label": "BÌNH THƯỜNG (TẮT BÁO CHÁY)",
+    "tooltip": "Hủy chế độ báo cháy, đưa bãi xe về trạng thái hoạt động bình thường",
+    "color": "#ffffff",
+    "bgcolor": "#2e7d32",
+    "icon": "fa-shield",
+    "payload": "{\"cmd\":\"nofire\"}",
+    "payloadType": "json",
+    "topic": "",
+    "topicType": "str",
+    "x": 170,
+    "y": 990,
+    "wires": [
+      [
+        "out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "ui_group_analytics",
+    "type": "ui_group",
+    "name": "Báo Cáo Thống Kê & Cơ Sở Dữ Liệu (Analytics & Database)",
+    "tab": "ui_tab_parking",
+    "order": 6,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "fn_analytics_db",
+    "type": "function",
+    "z": "tab1",
+    "name": "Analytics & Database Engine",
+    "func": "var data = typeof msg.payload === 'object' ? msg.payload : JSON.parse(msg.payload || '{}');\nvar stats = flow.get('parking_stats') || {\n    totalRevenue: 0,\n    totalCheckins: 0,\n    totalCheckouts: 0,\n    totalDuration: 0,\n    currentParked: 0,\n    maxCapacity: 2,\n    transactions: []\n};\n\nif (msg.resetStats) {\n    stats = {\n        totalRevenue: 0,\n        totalCheckins: 0,\n        totalCheckouts: 0,\n        totalDuration: 0,\n        currentParked: 0,\n        maxCapacity: 2,\n        transactions: []\n    };\n    flow.set('parking_stats', stats);\n} else if (data.action) {\n    var now = new Date();\n    var timeStr = now.toLocaleTimeString('vi-VN', { hour12: false });\n    \n    if (data.action === 'check_in') {\n        stats.totalCheckins++;\n        stats.currentParked = (data.parkedCount !== undefined) ? data.parkedCount : (stats.currentParked + 1);\n    } else if (data.action === 'check_out') {\n        stats.totalCheckouts++;\n        stats.currentParked = (data.parkedCount !== undefined) ? data.parkedCount : Math.max(0, stats.currentParked - 1);\n        var fee = Number(data.fee) || 0;\n        stats.totalRevenue += fee;\n        stats.totalDuration += (Number(data.durationSec) || 0);\n    }\n    if (data.totalSlots) {\n        stats.maxCapacity = data.totalSlots;\n    }\n\n    stats.transactions.unshift({\n        id: 'TXN-' + Date.now().toString(36).toUpperCase(),\n        timestamp: now.toISOString(),\n        timeFormatted: timeStr,\n        action: data.action,\n        uid: data.uid || 'N/A',\n        licensePlate: data.licensePlate || 'N/A',\n        ownerName: data.ownerName || 'Khach vang lai',\n        durationSec: data.durationSec || 0,\n        fee: data.fee || 0,\n        parkedCount: stats.currentParked\n    });\n    if (stats.transactions.length > 100) stats.transactions.pop();\n\n    flow.set('parking_stats', stats);\n}\n\nvar avgFee = stats.totalCheckouts > 0 ? Math.round(stats.totalRevenue / stats.totalCheckouts) : 0;\nvar avgDuration = stats.totalCheckouts > 0 ? Math.round(stats.totalDuration / stats.totalCheckouts) : 0;\nvar turnoverRate = stats.maxCapacity > 0 ? ((stats.totalCheckins / stats.maxCapacity) * 100).toFixed(0) : 0;\n\nvar kpiHtml = '<div style=\"display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;\">' +\n    '<div style=\"background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 8px; padding: 14px; text-align: left; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">' +\n        '<div style=\"font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600; letter-spacing: 0.5px;\">Tổng Doanh Thu Lũy Kế</div>' +\n        '<div style=\"font-size: 24px; font-weight: 700; color: #10b981; margin-top: 4px;\">' + stats.totalRevenue.toLocaleString('vi-VN') + ' <span style=\"font-size: 14px; color: #6ee7b7;\">VNĐ</span></div>' +\n        '<div style=\"font-size: 11px; color: #cbd5e1; margin-top: 4px;\">TB: ' + avgFee.toLocaleString('vi-VN') + ' đ/lượt</div>' +\n    '</div>' +\n    '<div style=\"background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 8px; padding: 14px; text-align: left; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">' +\n        '<div style=\"font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600; letter-spacing: 0.5px;\">Tổng Lượt Xe Phục Vụ</div>' +\n        '<div style=\"font-size: 24px; font-weight: 700; color: #38bdf8; margin-top: 4px;\">' + (stats.totalCheckins + stats.totalCheckouts) + ' <span style=\"font-size: 14px; color: #7dd3fc;\">lượt</span></div>' +\n        '<div style=\"font-size: 11px; color: #cbd5e1; margin-top: 4px;\">Vào: ' + stats.totalCheckins + ' | Ra: ' + stats.totalCheckouts + '</div>' +\n    '</div>' +\n    '<div style=\"background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 8px; padding: 14px; text-align: left; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">' +\n        '<div style=\"font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600; letter-spacing: 0.5px;\">Hiện Tại / Công Suất</div>' +\n        '<div style=\"font-size: 24px; font-weight: 700; color: ' + (stats.currentParked >= stats.maxCapacity ? '#ef4444' : '#f59e0b') + '; margin-top: 4px;\">' + stats.currentParked + ' / ' + stats.maxCapacity + ' <span style=\"font-size: 14px; color: #cbd5e1;\">xe</span></div>' +\n        '<div style=\"font-size: 11px; color: #cbd5e1; margin-top: 4px;\">Hệ số quay vòng: ' + turnoverRate + '%</div>' +\n    '</div>' +\n    '<div style=\"background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 8px; padding: 14px; text-align: left; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">' +\n        '<div style=\"font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600; letter-spacing: 0.5px;\">Thời Gian Đỗ Trung Bình</div>' +\n        '<div style=\"font-size: 24px; font-weight: 700; color: #a855f7; margin-top: 4px;\">' + avgDuration + ' <span style=\"font-size: 14px; color: #d8b4fe;\">giây</span></div>' +\n        '<div style=\"font-size: 11px; color: #cbd5e1; margin-top: 4px;\">Trạng thái DB: Persistent Active</div>' +\n    '</div>' +\n'</div>';\n\nvar msgKpi = { payload: kpiHtml };\nvar msgRevChart = { payload: stats.totalRevenue, topic: 'Doanh thu (VNĐ)' };\nvar msgOccChart = { payload: stats.currentParked, topic: 'Số xe trong bãi' };\nvar msgDbSave = { \n    filename: 'parking_database.json',\n    payload: JSON.stringify({\n        database_meta: {\n            system: 'Smart Parking AIoT Database',\n            version: '2.4.0',\n            updated_at: new Date().toISOString()\n        },\n        analytics_summary: {\n            total_revenue_vnd: stats.totalRevenue,\n            total_checkins: stats.totalCheckins,\n            total_checkouts: stats.totalCheckouts,\n            current_parked: stats.currentParked,\n            max_capacity: stats.maxCapacity,\n            avg_fee_vnd: avgFee,\n            avg_duration_sec: avgDuration\n        },\n        transactions: stats.transactions\n    }, null, 2)\n};\n\nreturn [msgKpi, msgRevChart, msgOccChart, msgDbSave];",
+    "outputs": 4,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 450,
+    "y": 1120,
+    "wires": [
+      [
+        "ui_template_kpi"
+      ],
+      [
+        "ui_chart_rev"
+      ],
+      [
+        "ui_chart_occ"
+      ],
+      [
+        "file_db_save"
+      ]
+    ]
+  },
+  {
+    "id": "ui_template_kpi",
+    "type": "ui_template",
+    "z": "tab1",
+    "group": "ui_group_analytics",
+    "name": "Bảng Số Liệu KPI Doanh Thu & Lưu Lượng",
+    "order": 1,
+    "width": "12",
+    "height": "3",
+    "format": "{{msg.payload}}",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "x": 820,
+    "y": 1060,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_chart_rev",
+    "type": "ui_chart",
+    "z": "tab1",
+    "name": "Biểu Đồ Doanh Thu Tích Lũy",
+    "group": "ui_group_analytics",
+    "order": 2,
+    "width": "6",
+    "height": "6",
+    "label": "Biểu Đồ Doanh Thu Tích Lũy (VNĐ)",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "Chưa có giao dịch thanh toán",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "",
+    "removeOlder": "1",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "3600",
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#10b981",
+      "#aec7e8",
+      "#ff7f0e",
+      "#2ca02c",
+      "#98df8a",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 800,
+    "y": 1120,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_chart_occ",
+    "type": "ui_chart",
+    "z": "tab1",
+    "name": "Biểu Đồ Biến Thiên Lưu Lượng Xe",
+    "group": "ui_group_analytics",
+    "order": 3,
+    "width": "6",
+    "height": "6",
+    "label": "Biểu Đồ Biến Thiên Số Xe Trong Bãi",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "step",
+    "nodata": "Chưa có lượt xe vào",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "4",
+    "removeOlder": "1",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "3600",
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#38bdf8",
+      "#aec7e8",
+      "#ff7f0e",
+      "#2ca02c",
+      "#98df8a",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 810,
+    "y": 1180,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "file_db_save",
+    "type": "file",
+    "z": "tab1",
+    "name": "Lưu Trữ Persistent Database (JSON)",
+    "filename": "parking_database.json",
+    "appendNewline": false,
+    "createDir": true,
+    "overwriteFile": "true",
+    "encoding": "utf8",
+    "x": 830,
+    "y": 1240,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_btn_reset_stats",
+    "type": "ui_button",
+    "z": "tab1",
+    "name": "Nút Reset Thống Kê",
+    "group": "ui_group_analytics",
+    "order": 4,
+    "width": "4",
+    "height": "1",
+    "passthru": false,
+    "label": "Đặt Lại Thống Kê Ngày Mới",
+    "tooltip": "Xóa sạch thống kê và tạo phiên kiểm toán mới",
+    "color": "#ffffff",
+    "bgcolor": "#475569",
+    "icon": "",
+    "payload": "{\"resetStats\": true}",
+    "payloadType": "json",
+    "topic": "",
+    "topicType": "str",
+    "x": 170,
+    "y": 1160,
+    "wires": [
+      [
+        "fn_analytics_db"
+      ]
+    ]
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "name": "iot-smart-parking-nodered",
+  "version": "2.4.0",
+  "description": "Node-RED Middleware for AIoT Smart Parking System",
+  "dependencies": {
+    "node-red-dashboard": "^3.6.5"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "author": "User",
+  "author": "Smart Parking Team",
   "editor": "wokwi",
   "parts": [
     { "type": "board-esp32-devkit-c-v4", "id": "esp1", "top": 60, "left": 10, "attrs": {} },
@@ -16,7 +16,7 @@
       "type": "wokwi-buzzer",
       "id": "bz1",
       "top": 340.8,
-      "left": 26.16,
+      "left": -60,
       "attrs": { "volume": "0.1" }
     },
     {
@@ -25,6 +25,34 @@
       "top": -120,
       "left": 100,
       "attrs": { "pins": "i2c" }
+    },
+    {
+      "type": "wokwi-hc-sr04",
+      "id": "us1",
+      "top": 200,
+      "left": -200,
+      "attrs": { "distance": "50" }
+    },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": -120,
+      "left": -120,
+      "attrs": { "temperature": "28", "humidity": "65" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_red",
+      "top": 360,
+      "left": 120,
+      "attrs": { "color": "red", "label": "STOP" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_green",
+      "top": 360,
+      "left": 190,
+      "attrs": { "color": "green", "label": "GO" }
     }
   ],
   "connections": [
@@ -43,11 +71,24 @@
     [ "esp1:21", "lcd1:SDA", "blue", [ "h0" ] ],
     [ "esp1:22", "lcd1:SCL", "blue", [ "h0" ] ],
     [ "esp1:5V", "lcd1:VCC", "red", [ "h0" ] ],
-    [ "esp1:GND.1", "lcd1:GND", "black", [ "h0" ] ]
+    [ "esp1:GND.1", "lcd1:GND", "black", [ "h0" ] ],
+    [ "esp1:5V", "us1:VCC", "red", [ "h0" ] ],
+    [ "esp1:27", "us1:TRIG", "purple", [ "h0" ] ],
+    [ "esp1:32", "us1:ECHO", "orange", [ "h0" ] ],
+    [ "esp1:GND.2", "us1:GND", "black", [ "h0" ] ],
+    [ "esp1:3V3", "dht1:VCC", "red", [ "h0" ] ],
+    [ "esp1:15", "dht1:SDA", "yellow", [ "h0" ] ],
+    [ "esp1:GND.3", "dht1:GND", "black", [ "h0" ] ],
+    [ "esp1:25", "led_red:A", "red", [ "h0" ] ],
+    [ "esp1:GND.2", "led_red:C", "black", [ "h0" ] ],
+    [ "esp1:26", "led_green:A", "green", [ "h0" ] ],
+    [ "esp1:GND.2", "led_green:C", "black", [ "h0" ] ],
+    [ "esp1:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp1:RX", "$serialMonitor:TX", "", [] ]
   ],
   "serialMonitor": {
     "display": "always",
     "newline": "lf"
   },
   "dependencies": {}
-}
+}
